@@ -1,0 +1,923 @@
+---
+title: "tuning curve statistics"
+output: html_document
+date: "2023-03-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+# Notes 
+See this website for calculating R2 for mixed models:
+https://ecologyforacrowdedplanet.wordpress.com/2013/08/27/r-squared-in-mixed-models-the-easy-way/
+
+The marginal R squared values are those associated with your fixed effects, the conditional ones are those of your fixed effects plus the random effects. Usually we will be interested in the marginal effects.
+
+
+```{r, echo=FALSE}
+# install libraries and download the data
+library(gsignal)
+library(ggplot2)
+library(gghighlight)
+library(ggsignif)
+library(grid)
+library(gridExtra)
+library(ggpubr)
+library(plotrix)
+library(tidyverse)
+library(lubridate)
+library(lme4)
+library(lmerTest)
+library(readxl)
+library(broom.mixed)
+library(MuMIn)
+library(R.matlab)
+library(viridis)
+#col2rgb(viridis(4)) # this gives the RBG colors for use in matlab
+colormapDset1=c(viridis(4)[1],viridis(4)[2])
+colormapDset2=c(viridis(4)[3],viridis(4)[4])
+colormapBonus=c(viridis(4)[1],viridis(4)[3])
+
+dataset<-readMat('all_data.mat')
+
+stderror <- function(x) sd(x,na.rm=TRUE)/sqrt(length(x))
+```
+
+```{r, echo=FALSE}
+# Function to clean mag and phase data
+cleanData <- function(expDataMag,expDataPhase) {
+  NF=0.7 # noise floor threshold in nm
+  L1N=ncol(expDataMag)
+  F1N=nrow(expDataMag)
+  # put in a row of zeros first to make sure phases start off near zero
+  phiTemp<-expDataPhase*2*pi 
+  phiTemp<-add_row(phiTemp,.before=1)
+  phiTemp[1,1:L1N]=0
+  phiTemp1<-phiTemp
+  
+  # phase unwrap along freq axis first
+  for (l in 1:L1N) {
+    x=phiTemp1[,l]
+    x=unwrap(x)
+    phiTemp1[,l]<-x
+  }
+  #remove row of zeros
+  phiTemp2<-phiTemp1[2:nrow(phiTemp1),] 
+ 
+  # phase unwrap along intensity axis now (from loudest to quietest)
+  for (f in 1:F1N) {
+    x=as.double(phiTemp2[f,1:L1N])
+    x=unwrap(rev(x))
+    phiTemp2[f,1:L1N]<-as.list(rev(x))
+  }
+  
+  expDataMag1<-expDataMag
+  expDataPhase1<-phiTemp2/2*pi
+  expDataMag1[expDataMag1<NF]=NA
+  expDataPhase1[is.na(expDataMag1)]=NA
+  
+  dReturn<-list(mag=expDataMag1,phase=expDataPhase1)
+  return(dReturn)
+}
+```
+
+```{r}
+plotMagFig<-function(dTablePred,dTable,degree,colormap,dTave) {
+  ylimMag=c(20*log10(0.5),20*log10(300))
+  xlimMag=c(1,15)
+  nLevel=length(unique(dTable$level))
+  cohorts=as.character(unique(dTable$cohort))
+  if (nLevel==1) {
+    fit<-lmer(magLog ~ stats::poly(freq,degree) + cohort + (1|id), data=dTable)
+    eqn=sprintf("log(mag) ~ poly(freq,%d) + cohort + (1/id)",degree)
+  } else {
+    fit<-lmer(magLog ~ stats::poly(freq,degree)*level + cohort + (1|id), data=dTable)
+    eqn=sprintf("log(mag) ~ poly(freq,%d)*level + cohort + (1/id)",degree)
+  }
+  pSum<-summary(fit)$coefficients
+  R2<-r.squaredGLMM(fit)
+
+  R2text=sprintf("R^2 = %3.2f",R2[2])
+  grob1 <- grobTree(textGrob(eqn, x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=7, fontface="italic")))
+  grob2 <- grobTree(textGrob(R2text, x=0.99,  y=0.85, just='right', gp=gpar(col="black", fontsize=7, fontface="italic")))
+  grob3 <- grobTree(textGrob(cohorts[1], x=0.99,  y=0.95, just='right', gp=gpar(col=colormap[1], fontsize=7, fontface="italic")))
+  grob4 <- grobTree(textGrob(cohorts[2], x=0.99,  y=0.85, just='right', gp=gpar(col=colormap[2], fontsize=7, fontface="italic")))
+
+  dT=cbind(dTablePred, new.predict = predict(fit,newdata=dTablePred,allow.new.levels = TRUE))
+  p1pred<-ggplot()+ 
+    geom_point(data=dTave,aes(x=freq,y=magLog, group=interaction(cohort,level), color=cohort), size=0.7) +
+#    geom_errorbar(data=dTave,aes(x=freq,ymin=magLog-magSEM, ymax=magLog+magSEM, color=cohort), width=0.01) +
+    geom_line(data = dT, aes(x = freq, y = new.predict, group=interaction(id,level), color=cohort), size=0.7) +
+    scale_colour_manual(values = colormap) +
+    annotation_custom(grob1) +
+    annotation_custom(grob2) +
+    theme_bw() +
+    labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+    xlim(xlimMag) +
+    ylim(ylimMag) +
+    scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+    theme(legend.position = "none") +
+    theme(
+      axis.title=element_text(size=8),
+      axis.text=element_text(size=8)
+    )
+  
+  p1res<-ggplot(augment(fit), aes(x = .fitted, y = .resid, color=cohort)) +
+    geom_point(size=0.7) +
+    scale_colour_manual(values = colormap)+
+    theme_bw() +
+    labs(x = "Fitted", y="Residual") +
+    annotation_custom(grob3) +
+    annotation_custom(grob4) +
+    geom_hline(yintercept = 0) +
+    theme(legend.position = "none") +
+    theme(
+      axis.title=element_text(size=8),
+      axis.text=element_text(size=8)
+    )
+  
+  p<-ggarrange(p1pred, p1res, ncol = 2, nrow = 1)
+  dReturn<-list(p=p,pSum=pSum,R2=R2,eqn=eqn)
+  return(dReturn)
+}
+
+plotPhFig<-function(dTablePred,dTable,degree,colormap,dTave) {
+  ylimPh=c(-5,0)
+  xlimMag=c(1,15)
+  nLevel=length(unique(dTable$level))
+  fit<-lmer(phaseCycle ~ stats::poly(freq,degree)*level + cohort + (1|id), data=dTable)
+  eqn=sprintf("phase ~ poly(freq,%d)*level + cohort + (1/id)",degree)
+  pSum<-summary(fit)$coefficients
+  R2<-r.squaredGLMM(fit)
+
+  R2text=sprintf("R^2=^%3.2f",R2[2])
+  grob1 <- grobTree(textGrob(eqn, x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=7, fontface="italic")))
+  grob2 <- grobTree(textGrob(R2text, x=0.99,  y=0.85, just='right', gp=gpar(col="black", fontsize=7, fontface="italic")))
+  grob3 <- grobTree(textGrob(cohorts[1], x=0.99,  y=0.95, just='right', gp=gpar(col=colormap[1], fontsize=7, fontface="italic")))
+  grob4 <- grobTree(textGrob(cohorts[2], x=0.99,  y=0.85, just='right', gp=gpar(col=colormap[2], fontsize=7, fontface="italic")))
+
+  dT=cbind(dTablePred, new.predict = predict(fit,newdata=dTablePred,allow.new.levels = TRUE))
+  p1pred<-ggplot()+ 
+    geom_point(data=dTave,aes(x=freq,y=phaseCycle, group=interaction(cohort,level), color=cohort), size=0.7) +
+#    geom_errorbar(data=dTave,aes(x=freq,ymin=phaseCycle-phaseSEM, ymax=phaseCycle+phaseSEM, color=cohort), width=0.01) +
+    geom_line(data = dT, aes(x = freq, y = new.predict, group=interaction(id,level), color=cohort), size=0.7) +
+    scale_colour_manual(values = colormap) +
+    annotation_custom(grob1) +
+    annotation_custom(grob2) +
+    theme_bw() +
+    labs(x = "Freq (kHz)", y="Phase (cycles)") +
+    xlim(xlimMag) +
+    ylim(ylimPh) +
+    scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+    theme(legend.position = "none") +
+    theme(
+      axis.title=element_text(size=8),
+      axis.text=element_text(size=8)
+    )
+  
+  p1res<-ggplot(augment(fit), aes(x = .fitted, y = .resid, color=cohort)) +
+    geom_point(size=0.7) +
+    scale_colour_manual(values = colormap)+
+    theme_bw() +
+    labs(x = "Fitted", y="Residual") +
+    annotation_custom(grob3) +
+    annotation_custom(grob4) +
+    geom_hline(yintercept = 0) +
+    theme(legend.position = "none") +
+    theme(
+      axis.title=element_text(size=8),
+      axis.text=element_text(size=8)
+    )
+  
+  p<-ggarrange(p1pred, p1res, ncol = 2, nrow = 1)
+  dReturn<-list(p=p,pSum=pSum,R2=R2,eqn=eqn)
+  return(dReturn)
+}
+
+### Create table of coefficients
+coefTable<-function(dSet1,dSet2,dSet3,dSet4) {
+  sFig=3
+  if (length(dSet1$pSum[,5])==3){
+    deg1=rep(NA, 6)
+    deg2=rep(NA, 6)
+    deg3=rep(NA, 6)
+    deg4=rep(NA, 6)
+    
+    deg1[1]=dSet1$pSum[1,5]
+    deg1[3]=dSet1$pSum[2,5]
+    deg1[2]=dSet1$pSum[3,5]
+    
+    deg2[1]=dSet2$pSum[1,5]
+    deg2[3:4]=dSet2$pSum[2:3,5]
+    deg2[2]=dSet2$pSum[4,5]
+    
+    deg3[1]=dSet3$pSum[1,5]
+    deg3[3:5]=dSet3$pSum[2:4,5]
+    deg3[2]=dSet3$pSum[5,5]
+    
+    deg4[1]=dSet4$pSum[1,5]
+    deg4[3:6]=dSet4$pSum[2:5,5]
+    deg4[2]=dSet4$pSum[6,5]
+
+  } else {
+    deg1=rep(NA, 11)
+    deg2=rep(NA, 11)
+    deg3=rep(NA, 11)
+    deg4=rep(NA, 11)
+    
+    deg1[1]=dSet1$pSum[1,5]
+    deg1[4]=dSet1$pSum[2,5]
+    deg1[3]=dSet1$pSum[3,5]
+    deg1[2]=dSet1$pSum[4,5]
+    deg1[8]=dSet1$pSum[5,5]
+    
+    deg2[1]=dSet2$pSum[1,5]
+    deg2[4:5]=dSet2$pSum[2:3,5]
+    deg2[3]=dSet2$pSum[4,5]
+    deg2[2]=dSet2$pSum[5,5]
+    deg2[8:9]=dSet2$pSum[6:7,5]
+    
+    deg3[1]=dSet3$pSum[1,5]
+    deg3[4:6]=dSet3$pSum[2:4,5]
+    deg3[3]=dSet3$pSum[5,5]
+    deg3[2]=dSet3$pSum[6,5]
+    deg3[8:10]=dSet3$pSum[7:9,5]
+    
+    deg4[1]=dSet4$pSum[1,5]
+    deg4[4:7]=dSet4$pSum[2:5,5]
+    deg4[3]=dSet4$pSum[6,5]
+    deg4[2]=dSet4$pSum[7,5]
+    deg4[8:11]=dSet4$pSum[8:11,5]
+  }
+#  pTable=tibble(num(deg1,sigfig=sFig),num(deg2,sigfig=sFig),num(deg3,sigfig=sFig),num(deg4,sigfig=sFig))
+  pTable=tibble(deg1,deg2,deg3,deg4)
+  return(pTable)
+}
+```
+
+
+```{r}
+# sort through dataset 1 and put it into a data table for analysis
+Freq=as.numeric(unlist(dataset$d3[1]))/1000
+Level=as.numeric(unlist(dataset$d3[2]))
+nFreq=length(Freq)
+nLevel=length(Level)
+cohorts = c('WT (mixed C57BL/6:FVB)','Lgr5-DTR')
+nCohort= c(5,5)  # number of mice in each cohort
+
+dTable1=tibble(
+  id=character(),
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  mag=double(),
+  phase=numeric(),
+)
+
+for (g in 1:2){
+  for (i in 1:nCohort[g]){
+    expDataMag=dataset[[g+2]][[3]][[1]][[1]][,,i]
+    expDataPhase=dataset[[g+2]][[3]][[1]][[2]][,,i]
+    
+    # first change all NaNs (matlab) to NA (R)
+    expDataMag[is.nan(expDataMag)]<-NA
+    expDataPhase[is.nan(expDataPhase)]<-NA
+  
+    dReturn<-cleanData(as_tibble(expDataMag),as_tibble(expDataPhase))
+    expDataMag1<-dReturn$mag
+    expDataPhase1<-dReturn$phase
+    if (g==1)
+      {idtemp=sprintf('WT-%d',i)}
+    else
+      {idtemp=sprintf('LGR5-%d',i)}
+    
+    for (f in 1:nFreq){
+      for (l in 1:nLevel){
+        m=pull(expDataMag1[f,l])
+        p=expDataPhase1[f,l]
+        dTable1<-add_row(dTable1,
+          id=idtemp,
+          cohort=cohorts[g],
+          freq=Freq[f],
+          level=Level[l],
+          mag=m,
+          phase=p
+        )
+      }
+    }
+  }
+}
+
+dTable1$id<-as.factor(dTable1$id)
+dTable1$cohort<-as.factor(dTable1$cohort)
+dTable1$cohort<-relevel(dTable1$cohort,cohorts[1])
+dTable1$freqFactor<-as.factor(dTable1$freq)
+dTable1$levelFactor<-as.factor(dTable1$level)
+dTable1$magLog<-20*log10(dTable1$mag)
+dTable1$phaseCycle<-dTable1$phase/(2*pi)
+
+# create average tuning curves with error bars
+dTable<-dTable1
+dTable<-dTable[!is.na(dTable$mag),]
+freqs=unique(dTable$freq)
+levels=unique(dTable$level)
+cohorts=unique(dTable$cohort)
+nid1=length(unique(dTable$id[dTable$cohort==cohorts[1]]))
+nid2=length(unique(dTable$id[dTable$cohort==cohorts[2]]))
+nFreq=length(freqs)
+nLevel=length(levels)
+ncohort=length(cohorts)
+
+dTave=tibble(
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  magLog=double(),
+  phaseCycle=numeric(),
+  magSEM=double(),
+  phaseSEM=numeric(),
+)
+
+for (g in 1:ncohort){
+  for (f in 1:nFreq) {
+    for (l in 1:nLevel) {
+      dT<-filter(dTable, cohort==cohorts[g] & freq==freqs[f] & level==levels[l])
+      dTave<-add_row(dTave,
+          cohort=cohorts[g],
+          freq=freqs[f],
+          level=levels[l],
+          magLog=20*log10(mean(dT$mag,na.rm=TRUE)),
+          phaseCycle=mean(dT$phaseCycle,na.rm=TRUE),
+          magSEM=stderror(20*log10(dT$mag)),
+          phaseSEM=stderror(dT$phaseCycle)
+      )
+    }
+  }
+}
+dTave1<-dTave
+
+```
+
+
+```{r}
+# sort through dataset 2 and put it into a data table for analysis
+Freq=as.numeric(unlist(dataset$d1[1]))/1000
+Level=as.numeric(unlist(dataset$d1[2]))
+nFreq=length(Freq)
+nLevel=length(Level)
+cohorts = c('WT1 (CBA/CaJ)','WT2 (CBA/CaJ)')
+nCohort= c(20,22)  # number of mice in each cohort
+
+dTable2=tibble(
+  id=character(),
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  mag=double(),
+  phase=numeric(),
+)
+
+for (g in 1:2){
+  for (i in 1:nCohort[g]){
+    expDataMag=dataset[[g]][[3]][[1]][[1]][,,i]
+    expDataPhase=dataset[[g]][[3]][[1]][[2]][,,i]
+    
+    # first change all NaNs (matlab) to NA (R)
+    expDataMag[is.nan(expDataMag)]<-NA
+    expDataPhase[is.nan(expDataPhase)]<-NA
+  
+    dReturn<-cleanData(as_tibble(expDataMag),as_tibble(expDataPhase))
+    expDataMag1<-dReturn$mag
+    expDataPhase1<-dReturn$phase
+    idtemp=sprintf('WT%d-%d',g,i)
+    
+    for (f in 1:nFreq){
+      for (l in 1:nLevel){
+        m=pull(expDataMag1[f,l])
+        p=expDataPhase1[f,l]
+        dTable2<-add_row(dTable2,
+          id=idtemp,
+          cohort=cohorts[g],
+          freq=Freq[f],
+          level=Level[l],
+          mag=m,
+          phase=p
+        )
+      }
+    }
+  }
+}
+
+#unwrap phase by 2pi so all mice are in the same range 
+dTable2$phase[dTable2$id=='WT1-8']=dTable2$phase[dTable2$id=='WT1-8']+3*pi
+dTable2$phase[dTable2$id=='WT1-6']=dTable2$phase[dTable2$id=='WT1-6']+3*pi
+
+dTable2$id<-as.factor(dTable2$id)
+dTable2$cohort<-as.factor(dTable2$cohort)
+dTable2$freqFactor<-as.factor(dTable2$freq)
+dTable2$levelFactor<-as.factor(dTable2$level)
+dTable2$magLog<-20*log10(dTable2$mag)
+dTable2$phaseCycle<-dTable2$phase/(2*pi)
+
+# create average tuning curves with error bars
+dTable<-dTable2
+dTable<-dTable[!is.na(dTable$mag),]
+freqs=unique(dTable$freq)
+levels=unique(dTable$level)
+cohorts=unique(dTable$cohort)
+nid1=length(unique(dTable$id[dTable$cohort==cohorts[1]]))
+nid2=length(unique(dTable$id[dTable$cohort==cohorts[2]]))
+nFreq=length(freqs)
+nLevel=length(levels)
+ncohort=length(cohorts)
+
+dTave=tibble(
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  magLog=double(),
+  phaseCycle=numeric(),
+  magSEM=double(),
+  phaseSEM=numeric(),
+)
+
+for (g in 1:ncohort){
+  for (f in 1:nFreq) {
+    for (l in 1:nLevel) {
+      dT<-filter(dTable, cohort==cohorts[g] & freq==freqs[f] & level==levels[l])
+      dTave<-add_row(dTave,
+          cohort=cohorts[g],
+          freq=freqs[f],
+          level=levels[l],
+          magLog=20*log10(mean(dT$mag,na.rm=TRUE)),
+          phaseCycle=mean(dT$phaseCycle,na.rm=TRUE),
+          magSEM=stderror(20*log10(dT$mag)),
+          phaseSEM=stderror(dT$phaseCycle)
+      )
+    }
+  }
+}
+dTave2<-dTave
+```
+
+```{r}
+# create sample datasets for predicting fits
+Freq=seq(1,15, by=0.1)
+Level=seq(10,90, by=10)
+nFreq=length(Freq)
+nLevel=length(Level)
+cohorts1 = c('WT (mixed C57BL/6:FVB)','Lgr5-DTR')
+cohorts2 = c('WT1 (CBA/CaJ)','WT2 (CBA/CaJ)')
+ids=c('Pred1','Pred2')
+dTablePred1=tibble(
+  id=character(),
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  mag=double(),
+  phase=numeric(),
+)
+dTablePred2=tibble(
+  id=character(),
+  cohort=factor(levels=cohorts),
+  freq=numeric(),
+  level=numeric(),
+  mag=double(),
+  phase=numeric(),
+)
+for (g in 1:2) {
+  for (f in 1:nFreq){
+    for (l in 1:nLevel){
+      dTablePred1<-add_row(dTablePred1,
+                       id=ids[g],
+                       cohort=cohorts1[g],
+                       freq=Freq[f],
+                       level=Level[l],
+                       mag=0,
+                       phase=0
+      )
+      dTablePred2<-add_row(dTablePred2,
+                       id=ids[g],
+                       cohort=cohorts2[g],
+                       freq=Freq[f],
+                       level=Level[l],
+                       mag=0,
+                       phase=0
+      )
+    }
+  }
+}
+dTablePred1<-dTablePred1[(dTablePred1$level!=90),]
+dTablePred1$cohort<-as.factor(dTablePred1$cohort)
+dTablePred1$cohort<-relevel(dTablePred1$cohort,cohorts1[1])
+dTablePred2$cohort<-as.factor(dTablePred2$cohort)
+```
+
+```{r}
+###
+# Dataset 1 - Plot vibration magnitude and phase between genotypes
+# do basic stats
+###
+ylimMag=c(20*log10(0.5),20*log10(300))
+ylimPh=c(-5,0)
+xlimMag=c(1,15)
+dTable<-dTable1
+colormap=colormapDset1
+filename="Fig1.pdf"
+dTave<-dTave1
+dTable<-dTable[!is.na(dTable$mag),]
+freqs=unique(dTable$freq)
+levels=unique(dTable$level)
+cohorts=unique(dTable$cohort)
+nid1=length(unique(dTable$id[dTable$cohort==cohorts[1]]))
+nid2=length(unique(dTable$id[dTable$cohort==cohorts[2]]))
+nFreq=length(freqs)
+nLevel=length(levels)
+ncohort=length(cohorts)
+
+grob1 <- grobTree(textGrob(sprintf("%d-%d dB SPL",min(levels),max(levels)), x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+grob2 <- grobTree(textGrob("50 dB SPL", x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+grob3 <- grobTree(textGrob(sprintf("%s; n=%d",cohorts[1],nid1), x=0.99,  y=0.95, just='right', gp=gpar(col=colormap[1], fontsize=12, fontface="italic")))
+grob4 <- grobTree(textGrob(sprintf("%s; n=%d",cohorts[2],nid2), x=0.99,  y=0.89, just='right', gp=gpar(col=colormap[2], fontsize=12, fontface="italic")))
+grob5 <- grobTree(textGrob("Wilcox non-parametric test", x=0.99,  y=0.89, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+p0mag<-ggplot()+ 
+  geom_line(data=dTave,aes(x=freq,y=magLog,group=interaction(cohort,level),color=cohort), size=0.7) +
+  geom_point(data=dTave,aes(x=freq,y=magLog,group=interaction(cohort,level),color=cohort), size=1) +
+  geom_errorbar(data=dTave,aes(x=freq,ymin=magLog-magSEM, ymax=magLog+magSEM,color=cohort), width=.01) +
+  scale_colour_manual(values = colormap) +
+  theme_bw() +
+  annotation_custom(grob1) +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  xlim(xlimMag) +
+  ylim(ylimMag) +
+  scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10)
+  )
+p0ph<-ggplot()+ 
+  geom_line(data=dTave,aes(x=freq,y=phaseCycle,group=interaction(cohort,level),color=cohort), size=0.7) +
+  geom_point(data=dTave,aes(x=freq,y=phaseCycle,group=interaction(cohort,level),color=cohort), size=1) +
+  geom_errorbar(data=dTave,aes(x=freq,ymin=phaseCycle-phaseSEM, ymax=phaseCycle+phaseSEM,color=cohort), width=.01) +
+  scale_colour_manual(values = colormap) +
+  theme_bw() +
+  annotation_custom(grob3) +
+  annotation_custom(grob4) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  xlim(xlimMag) +
+  ylim(ylimPh) +
+  scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10)
+  )
+
+dTable<-dTable[(dTable$level==50),]
+cohorts=as.character(unique(dTable$cohort))
+nFreq=length(unique(dTable$freqFactor));
+fCmap=rep("transparent",nFreq)
+for (i in seq(1,nFreq,4)){
+  fCmap[i]="black"
+}
+p1<-ggplot() + 
+  geom_point(data=dTable, aes(x=freqFactor,y=magLog,color=cohort),position = "jitter") +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob2) +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  ylim(ylimMag) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p2<-ggplot() + 
+  geom_point(data=dTable, aes(x=freqFactor,y=phaseCycle,color=cohort),position = "jitter") +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob2) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  ylim(ylimPh) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p3<-ggboxplot(data=dTable,x="freqFactor",y="magLog", color="cohort") + 
+  stat_compare_means(aes(group=cohort),method='wilcox.test', paired=FALSE, label = "p.signif", hide.ns = TRUE, size=4) +
+  annotation_custom(grob5) +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  ylim(ylimMag) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p4<-ggboxplot(data=dTable,x="freqFactor",y="phaseCycle", color="cohort") + 
+  stat_compare_means(aes(group=cohort),method='wilcox.test', paired=FALSE, label = "p.signif", hide.ns = TRUE, size=4) +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob5) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  ylim(ylimPh) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+
+p<-ggarrange(p0mag,p0ph,p1,p2,p3,p4,ncol = 2, nrow = 3,labels=c("a","b","c","d","e","f"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 8, height = 10.5, units = "in",
+       dpi = 1200, limitsize = TRUE)
+```
+
+```{r}
+###
+# Dataset 2 - Plot vibration magnitude and phase at 50 dB SPL between cohorts
+###
+ylimMag=c(20*log10(0.5),20*log10(300))
+ylimPh=c(-5,0)
+xlimMag=c(1,15)
+dTable<-dTable2
+colormap=colormapDset2
+filename="Fig2.pdf"
+dTave<-dTave2
+dTable<-dTable[!is.na(dTable$mag),]
+freqs=unique(dTable$freq)
+levels=unique(dTable$level)
+cohorts=unique(dTable$cohort)
+nid1=length(unique(dTable$id[dTable$cohort==cohorts[1]]))
+nid2=length(unique(dTable$id[dTable$cohort==cohorts[2]]))
+nFreq=length(freqs)
+nLevel=length(levels)
+ncohort=length(cohorts)
+
+grob1 <- grobTree(textGrob(sprintf("%d-%d dB SPL",min(levels),max(levels)), x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+grob2 <- grobTree(textGrob("50 dB SPL", x=0.99,  y=0.95, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+grob3 <- grobTree(textGrob(sprintf("%s; n=%d",cohorts[1],nid1), x=0.99,  y=0.95, just='right', gp=gpar(col=colormap[1], fontsize=12, fontface="italic")))
+grob4 <- grobTree(textGrob(sprintf("%s; n=%d",cohorts[2],nid2), x=0.99,  y=0.89, just='right', gp=gpar(col=colormap[2], fontsize=12, fontface="italic")))
+grob5 <- grobTree(textGrob("Wilcox non-parametric test", x=0.99,  y=0.89, just='right', gp=gpar(col="black", fontsize=12, fontface="italic")))
+p0mag<-ggplot()+ 
+  geom_line(data=dTave,aes(x=freq,y=magLog,group=interaction(cohort,level),color=cohort), size=0.7) +
+  geom_point(data=dTave,aes(x=freq,y=magLog,group=interaction(cohort,level),color=cohort), size=1) +
+  geom_errorbar(data=dTave,aes(x=freq,ymin=magLog-magSEM, ymax=magLog+magSEM,color=cohort), width=.01) +
+  scale_colour_manual(values = colormap) +
+  theme_bw() +
+  annotation_custom(grob1) +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  xlim(xlimMag) +
+  ylim(ylimMag) +
+  scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10)
+  )
+p0ph<-ggplot()+ 
+  geom_line(data=dTave,aes(x=freq,y=phaseCycle,group=interaction(cohort,level),color=cohort), size=0.7) +
+  geom_point(data=dTave,aes(x=freq,y=phaseCycle,group=interaction(cohort,level),color=cohort), size=1) +
+  geom_errorbar(data=dTave,aes(x=freq,ymin=phaseCycle-phaseSEM, ymax=phaseCycle+phaseSEM,color=cohort), width=.01) +
+  scale_colour_manual(values = colormap) +
+  theme_bw() +
+  annotation_custom(grob3) +
+  annotation_custom(grob4) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  xlim(xlimMag) +
+  ylim(ylimPh) +
+  scale_x_continuous(trans='log10',breaks=c(1,2,5,10)) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10)
+  )
+
+dTable<-dTable[(dTable$level==50),]
+cohorts=as.character(unique(dTable$cohort))
+nFreq=length(unique(dTable$freqFactor));
+fCmap=rep("transparent",nFreq)
+for (i in seq(1,nFreq,4)){
+  fCmap[i]="black"
+}
+p1<-ggplot() + 
+  geom_point(data=dTable, aes(x=freqFactor,y=magLog,color=cohort),position = "jitter") +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob2) +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  ylim(ylimMag) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p2<-ggplot() + 
+  geom_point(data=dTable, aes(x=freqFactor,y=phaseCycle,color=cohort),position = "jitter") +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob2) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  ylim(ylimPh) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p3<-ggboxplot(data=dTable,x="freqFactor",y="magLog", color="cohort") + 
+  stat_compare_means(aes(group=cohort),method='wilcox.test', paired=FALSE, label = "p.signif", hide.ns = TRUE, size=4) +
+  annotation_custom(grob5) +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  labs(x = "Freq (kHz)", y="Mag (dB re:1 nm)") +
+  ylim(ylimMag) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+p4<-ggboxplot(data=dTable,x="freqFactor",y="phaseCycle", color="cohort") + 
+  stat_compare_means(aes(group=cohort),method='wilcox.test', paired=FALSE, label = "p.signif", hide.ns = TRUE, size=4) +
+  scale_colour_manual(values = colormap)+
+  theme_bw() +
+  annotation_custom(grob5) +
+  labs(x = "Freq (kHz)", y="Phase (cycles)") +
+  ylim(ylimPh) +
+  theme(legend.position = "none") +
+  theme(
+    axis.title=element_text(size=12),
+    axis.text.y=element_text(size=10),
+    axis.text.x=element_text(size=10,color=fCmap)
+  )
+
+p<-ggarrange(p0mag,p0ph,p1,p2,p3,p4,ncol = 2, nrow = 3,labels=c("a","b","c","d","e","f"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 8, height = 10.5, units = "in",
+       dpi = 1200, limitsize = TRUE)
+```
+
+```{r}
+###
+# Dataset 1 - compare vibration magnitude at 50 dB SPL using linear fit vs polynomial fit with residual plots
+###
+dTable<-dTable1[(dTable1$level==50),]
+dTable<-dTable[!is.na(dTable$mag),]
+colormap=colormapDset1
+dTablePred=dTablePred1
+dTave<-dTave1[(dTave1$level==50),]
+filename="Fig3.pdf"
+dSet1<-plotMagFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotMagFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotMagFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotMagFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig3.csv")
+```
+
+```{r}
+###
+# Dataset 2 - compare vibration magnitude at 50 dB SPL using linear fit vs polynomial fit with residual plots
+###
+dTable<-dTable2[(dTable2$level==50),]
+dTable<-dTable[!is.na(dTable$mag),]
+dTave<-dTave2[(dTave2$level==50),]
+colormap=colormapDset2
+dTablePred=dTablePred2
+
+filename="Fig4.pdf"
+dSet1<-plotMagFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotMagFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotMagFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotMagFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig4.csv")
+```
+```{r}
+###
+# Dataset 1 - Now include all stimulus levels in the mixed effect modeling of vibration magnitude
+###
+dTable<-dTable1
+dTable<-dTable[!is.na(dTable$mag),]
+dTave<-dTave1
+colormap=colormapDset1
+dTablePred=dTablePred1
+
+filename="Fig5.pdf"
+dSet1<-plotMagFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotMagFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotMagFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotMagFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig5.csv")
+```
+
+```{r}
+###
+# Dataset 2 - Now include all stimulus levels in the mixed effect modeling of vibration magnitude
+###
+dTable<-dTable2
+dTable<-dTable[!is.na(dTable$mag),]
+dTave<-dTave2
+colormap=colormapDset2
+dTablePred=dTablePred2
+
+filename="Fig6.pdf"
+dSet1<-plotMagFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotMagFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotMagFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotMagFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig6.csv")
+```
+
+
+
+```{r}
+###
+# Dataset 1 - analyze for differences in phase using mixed effect modeling
+###
+dTable<-dTable1
+dTable<-dTable[!is.na(dTable$phase),]
+dTave<-dTave1
+colormap=colormapDset1
+dTablePred=dTablePred1
+
+filename="Fig7.pdf"
+dSet1<-plotPhFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotPhFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotPhFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotPhFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig7.csv")
+```
+```{r}
+###
+# Dataset 2 - analyze for differences in phase using mixed effect modeling
+###
+dTable<-dTable2
+dTable<-dTable[!is.na(dTable$phase),]
+dTave<-dTave2
+colormap=colormapDset2
+dTablePred=dTablePred2
+filename="Fig8.pdf"
+dSet1<-plotPhFig(dTablePred,dTable,1,colormap,dTave) 
+dSet2<-plotPhFig(dTablePred,dTable,2,colormap,dTave) 
+dSet3<-plotPhFig(dTablePred,dTable,3,colormap,dTave) 
+dSet4<-plotPhFig(dTablePred,dTable,4,colormap,dTave) 
+p<-ggarrange(dSet1$p, dSet2$p, dSet3$p, dSet4$p,ncol = 1, nrow = 4,labels=c("a","b","c","d"))
+ggsave(filename, plot = p, device = NULL, path = NULL,
+       scale = 1, width = 5, height = NA, units = "in",
+       dpi = 1200, limitsize = TRUE)
+pTable<-coefTable(dSet1,dSet2,dSet3,dSet4)
+print(pTable)
+write_csv(pTable,"Fig8.csv")
+```
+
