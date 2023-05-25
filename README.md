@@ -1,7 +1,9 @@
 # Linear-mixed-effect-modeling
 Raw data and R code for performing linear mixed-effect modeling of vibratory tuning curve data
 
-The file "linear mixed-effects example.R" can be run in RStudio. It loads in "testData.csv" and analyses it using the technique in the paper. You can use it in the same way, just format your data in a similar fashion and save as a CSV file. This is what most people would probably want to do. All the coefficients and p-values are printed out in RStudio, and then at the end, just the p-values for the Cohort comparisons for the magnitude and the phase data are given.
+The file "linear mixed-effects example.R" can be run in RStudio. It loads in "testData.csv" and analyses it using the technique in the paper. It saves a file (Figure.pdf) showing the fits. All the coefficients and p-values are printed out in RStudio, and then at the end, just the p-values for the Cohort comparisons for the magnitude and the phase data are given.
+
+You can use this program for your own data in the same way, just format your data in a similar fashion and save as a CSV file. 
 
 Column variables in the CSV file:
 id - indentification code of the animal (text); 
